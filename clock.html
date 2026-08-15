@@ -53,12 +53,22 @@
 
   .wrap:enabled { cursor: pointer; }
 
+  /* A painted card spans the whole block — a Notion block is the frame, and a
+     card floating inside it with the page showing down both sides reads as a
+     mistake. Radius and inset are set from the block's short side in JS, so
+     they stay proportional the way everything in the dial does. */
+  .wrap.filled {
+    background: var(--fill);
+    border-radius: var(--radius);
+    padding: var(--pad);
+  }
+
   /* The button fills the whole embed, so the ring has to be drawn inside it —
      an outward offset would land past the iframe edge and be clipped away. */
   .wrap:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
-    border-radius: 8px;
+    border-radius: var(--radius, 8px);
   }
 
   svg {
@@ -111,14 +121,14 @@
      scale with the face rather than staying a fixed pixel size. */
   .label {
     fill: var(--ink);
-    fill-opacity: 0.62;
+    fill-opacity: var(--label-op, 0.62);
     letter-spacing: 0.14em;
     font-family: inherit;
   }
   /* text-anchor centers on the advance width, which includes the trailing
      letter-space, so nudge back by half of it to land optically centered. */
   .label.zone { font-size: 12px; font-weight: 500; transform: translateX(0.84px); }
-  .label.date { font-size: 10.5px; fill-opacity: 0.5; transform: translateX(0.735px); }
+  .label.date { font-size: 10.5px; fill-opacity: var(--label-op-date, 0.5); transform: translateX(0.735px); }
 </style>
 </head>
 <body>
@@ -160,14 +170,16 @@
 
   var params = new URLSearchParams(location.search);
 
+  // A bare hex without the "#" is the common way to write a color in a query
+  // string, since "#" starts the fragment. Everything else is handed to the
+  // engine to judge — a color that only *looks* valid (a misspelled name) would
+  // otherwise reach CSS as garbage and drop the property it was meant to paint.
   function normalizeColor(value, fallback) {
     if (!value) return fallback;
     var v = value.trim();
-    if (/^[0-9a-f]{3}$|^[0-9a-f]{6}$/i.test(v)) return "#" + v;
-    if (/^#[0-9a-f]{3}$|^#[0-9a-f]{6}$/i.test(v)) return v;
-    if (/^(rgb|hsl)a?\([\d\s.,%\/-]+\)$/i.test(v)) return v;
-    if (/^[a-z]+$/i.test(v)) return v;
-    return fallback;
+    if (/^[0-9a-f]{3,8}$/i.test(v) && v.length !== 5 && v.length !== 7) v = "#" + v;
+    if (window.CSS && CSS.supports && !CSS.supports("color", v)) return fallback;
+    return v;
   }
 
   function flag(name, fallback) {
@@ -187,11 +199,50 @@
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   var smooth = flag("smooth", true) && !reduceMotion;
 
+  // ?fill takes a color, or a bare true to mean "the accent". On by default so
+  // the clock and the calendar sit on the same card when both are on a page;
+  // ?fill=false is the bare-on-the-page original.
+  var fillParam = params.get("fill");
+  var fill = accent;
+  if (fillParam !== null) {
+    var raw = fillParam.trim();
+    if (/^(true|1|on|yes|)$/i.test(raw)) fill = accent;
+    else if (/^(false|0|off|no)$/i.test(raw)) fill = null;
+    else fill = normalizeColor(raw, accent);
+  }
+
   var root = document.documentElement.style;
   root.setProperty("--accent", accent);
 
   var bg = params.get("bg");
   if (bg) root.setProperty("--bg", normalizeColor(bg, "transparent"));
+
+  // --- Contrast -------------------------------------------------------------
+  // Any CSS color is legal in these params, including names and hsl(), so
+  // resolve through the engine rather than parsing hex by hand.
+  var probe = document.createElement("span");
+  probe.style.display = "none";
+  document.body.appendChild(probe);
+
+  function luminance(color) {
+    probe.style.color = "";
+    probe.style.color = color;
+    var m = /(-?[\d.]+)[\s,]+(-?[\d.]+)[\s,]+(-?[\d.]+)/.exec(
+      window.getComputedStyle(probe).color
+    );
+    if (!m) return 0;
+    var c = [+m[1], +m[2], +m[3]].map(function (v) {
+      v = Math.min(Math.max(v, 0), 255) / 255;
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  }
+
+  // WCAG contrast against white is 1.06:1 at L=0.6 and 4.5:1 at L=0.18; 0.45
+  // is the crossover where black overtakes white as the readable choice.
+  function onColor(color) {
+    return luminance(color) > 0.45 ? "#2F3437" : "#FFFFFF";
+  }
 
   // Notion's own theme is unreadable from a cross-origin iframe, but the OS
   // preference does reach us. Follow it unless ?dark says otherwise.
@@ -202,6 +253,29 @@
     var dark = darkParam === null
       ? !!(darkQuery && darkQuery.matches)
       : flag("dark", false);
+
+    if (fill) {
+      // On a card, every color is fixed by the card itself — the OS theme must
+      // not repaint the hands onto a background it no longer contrasts with.
+      // The accent goes with them: an accent-colored arc on an accent-colored
+      // card is invisible, so on a card the arc, pin, and ring are the ink.
+      var on = onColor(fill);
+      root.setProperty("--fill", fill);
+      root.setProperty("--ink", normalizeColor(inkParam, on));
+      root.setProperty("--tick", normalizeColor(tickParam,
+        on === "#FFFFFF" ? "rgba(255,255,255,0.8)" : "rgba(47,52,55,0.66)"));
+      root.setProperty("--accent", on);
+      // The dimmed labels were tuned for ink on the host page's own background.
+      // Over a saturated card there is less contrast to spend, so they carry
+      // more of the ink.
+      root.setProperty("--label-op", "0.92");
+      root.setProperty("--label-op-date", "0.74");
+      // The card's rounded corners leave the frame's own canvas showing, so the
+      // scheme still has to be declared or those four corners composite white.
+      root.setProperty("color-scheme", dark ? "dark" : "light");
+      return;
+    }
+
     root.setProperty("--ink", normalizeColor(inkParam, dark ? "#E9E9E7" : "#2F3437"));
     root.setProperty("--tick", normalizeColor(tickParam, dark ? "#B9B9B7" : "#9B9A97"));
     // A transparent document still composites onto the frame's base canvas,
@@ -261,6 +335,13 @@
   if (tz && !isValidZone(tz)) tz = undefined;
 
   var zones = parseZones(params.get("zones"));
+
+  // With neither param given the clock would read the viewer's own machine,
+  // which is not what an embed on Zech's page should show. Pacific is the
+  // default; any explicit tz or zones list still wins outright.
+  if (!tz && !zones.length && isValidZone("America/Los_Angeles")) {
+    tz = "America/Los_Angeles";
+  }
   // An explicit tz joins the front of the list and becomes the default pick.
   if (tz && zones.length && indexOfZone(zones, tz) === -1) {
     zones.unshift({ id: tz, label: labelFor(tz) });
@@ -323,6 +404,29 @@
 
   var CIRC = 2 * Math.PI * 92;
   arcEl.style.strokeDasharray = CIRC.toFixed(2);
+
+  // --- Card -----------------------------------------------------------------
+  // Radius and inset come off the block's short side so the card keeps the same
+  // proportions in a 160px sidebar and a 500px block, the way the dial does.
+  if (fill) {
+    faceEl.classList.add("filled");
+
+    var sizeCard = function () {
+      var side = Math.min(
+        document.documentElement.clientWidth,
+        document.documentElement.clientHeight
+      );
+      root.setProperty("--radius", Math.min(Math.max(side * 0.055, 4), 22).toFixed(1) + "px");
+      root.setProperty("--pad", Math.max(side * 0.05, 4).toFixed(1) + "px");
+    };
+
+    sizeCard();
+    if (window.ResizeObserver) {
+      new ResizeObserver(sizeCard).observe(document.documentElement);
+    } else {
+      window.addEventListener("resize", sizeCard);
+    }
+  }
 
   if (seconds === "needle") {
     needleEl.style.display = "";

@@ -53,20 +53,26 @@
   <p>Single-file widgets for Notion <code>/embed</code> blocks. Every option is a URL query param —
      a sandboxed cross-origin iframe can't read anything from the page around it.</p>
 
-  <a class="widget" href="clock.html?zones=America/New_York,Asia/Seoul&amp;date=true">
-    <iframe src="clock.html?seconds=arc" title="Clock preview" loading="lazy" tabindex="-1"></iframe>
+  <a class="widget" href="clock.html?zones=America/Los_Angeles,Asia/Seoul&amp;date=true">
+    <iframe src="clock.html?date=true" title="Clock preview" loading="lazy" tabindex="-1"></iframe>
     <span>
       <h2>Clock &rarr; <code>clock.html</code></h2>
-      <p>Analog face. Click to cycle timezones with <code>?zones=</code>.</p>
+      <p>Analog face, Los Angeles unless you say otherwise.
+         Click to cycle timezones with <code>?zones=</code>.</p>
     </span>
   </a>
 
-  <a class="widget" href="calendar.html?fill=true">
+  <a class="widget" href="calendar.html?start=mon">
     <iframe src="calendar.html" title="Calendar preview" loading="lazy" tabindex="-1"></iframe>
     <span>
       <h2>Calendar &rarr; <code>calendar.html</code></h2>
-      <p>Month grid with today marked. <code>?fill=true</code> for the solid card.</p>
+      <p>Month grid with today marked, Sunday-first.
+         <code>?start=mon</code> for the ISO week.</p>
     </span>
   </a>
+
+  <p style="margin-top:28px">Both default to the green card. <code>?fill=false</code> drops it and
+     lets the page through; <code>?fill=</code><i>color</i> paints it something else &mdash; the
+     text and highlight recolor themselves to stay readable on whatever you pick.</p>
 </body>
 </html>

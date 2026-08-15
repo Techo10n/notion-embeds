@@ -152,13 +152,16 @@
   var tz        = params.get("tz") || undefined;
   var showToday = flag("today", true);
 
-  // ?fill takes a color, or a bare true to mean "the accent" — the filled-card
-  // look. Absent, the calendar is transparent like the clock.
+  // ?fill takes a color, or a bare true to mean "the accent". On by default so
+  // the calendar and the clock sit on the same card when both are on a page;
+  // ?fill=false is the bare-on-the-page version.
   var fillParam = params.get("fill");
-  var fill = null;
+  var fill = accent;
   if (fillParam !== null) {
-    if (/^(true|1|on|yes|)$/i.test(fillParam.trim())) fill = accent;
-    else if (!/^(false|0|off|no)$/i.test(fillParam.trim())) fill = normalizeColor(fillParam, accent);
+    var raw = fillParam.trim();
+    if (/^(true|1|on|yes|)$/i.test(raw)) fill = accent;
+    else if (/^(false|0|off|no)$/i.test(raw)) fill = null;
+    else fill = normalizeColor(raw, accent);
   }
 
   var root = document.documentElement.style;
@@ -216,8 +219,9 @@
       // must not repaint text onto a background it no longer contrasts with.
       var on = onColor(fill);
       root.setProperty("--fill", fill);
-      root.setProperty("--fill-ink", on);
-      root.setProperty("--muted", on === "#FFFFFF" ? "rgba(255,255,255,0.78)" : "rgba(47,52,55,0.62)");
+      root.setProperty("--fill-ink", normalizeColor(inkParam, on));
+      root.setProperty("--muted", normalizeColor(tickParam,
+        on === "#FFFFFF" ? "rgba(255,255,255,0.78)" : "rgba(47,52,55,0.62)"));
       root.setProperty("--today-bg", on);
       root.setProperty("--today-ink", fill);
     } else {
@@ -268,8 +272,8 @@
     if (m && +m[2] >= 1 && +m[2] <= 12) pinned = { y: +m[1], m: +m[2] };
   }
 
-  // Sunday-first is the other common convention; Monday-first is the default.
-  var weekStart = /^(sun|sunday|0)$/i.test(params.get("start") || "") ? 0 : 1;
+  // Sunday-first by default, US convention; ?start=mon for the ISO week.
+  var weekStart = /^(mon|monday|1)$/i.test(params.get("start") || "") ? 1 : 0;
 
   var monthFormatter = new Intl.DateTimeFormat(locale, {
     timeZone: "UTC",
