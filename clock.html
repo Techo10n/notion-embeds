@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Clock</title>
+<style>
+  :root {
+    --accent: #448361;
+    --ink: #2F3437;
+    --tick: #9B9A97;
+  }
+
+  * { box-sizing: border-box; }
+
+  /* Transparent by default so the host page shows through. ?bg= paints a
+     backdrop only for hosts whose own background can't be relied on. */
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--bg, transparent);
+    overflow: hidden;
+  }
+
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+  }
+
+  /* The wrapper is a <button> so the face is a real focusable control when
+     zone cycling is on. It stays disabled (and so inert and unstyled) when it
+     is off. Everything below is button reset. */
+  .wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    padding: 4px;
+    appearance: none;
+    -webkit-appearance: none;
+    background: none;
+    border: 0;
+    margin: 0;
+    color: inherit;
+    font: inherit;
+    text-align: center;
+  }
+
+  .wrap:enabled { cursor: pointer; }
+
+  /* The button fills the whole embed, so the ring has to be drawn inside it —
+     an outward offset would land past the iframe edge and be clipped away. */
+  .wrap:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    border-radius: 8px;
+  }
+
+  svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    max-width: 100%;
+    max-height: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .face-ring {
+    fill: none;
+    stroke: var(--tick);
+    stroke-opacity: 0.28;
+    stroke-width: 2.5;
+  }
+
+  .arc {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    transform: rotate(-90deg);
+    transform-origin: 100px 100px;
+  }
+
+  .tick { stroke: var(--tick); stroke-linecap: round; }
+  .tick.minor { stroke-width: 1.6; stroke-opacity: 0.55; }
+  .tick.major { stroke-width: 2.6; stroke-opacity: 0.9; }
+
+  .hand {
+    stroke: var(--ink);
+    stroke-linecap: round;
+    transform-origin: 100px 100px;
+  }
+  .hand.hour   { stroke-width: 5.5; }
+  .hand.minute { stroke-width: 3.8; }
+  .hand.needle { stroke: var(--accent); stroke-width: 1.4; }
+
+  /* Applied only for the length of a zone switch, then removed, so the
+     per-frame transform writes are untransitioned the rest of the time. */
+  .hand.shifting { transition: transform 260ms cubic-bezier(.22, .61, .36, 1); }
+
+  .pin  { fill: var(--accent); }
+  .pin-inner { fill: var(--ink); }
+
+  /* Labels live inside the dial, so they are SVG text in viewBox units and
+     scale with the face rather than staying a fixed pixel size. */
+  .label {
+    fill: var(--ink);
+    fill-opacity: 0.62;
+    letter-spacing: 0.14em;
+    font-family: inherit;
+  }
+  /* text-anchor centers on the advance width, which includes the trailing
+     letter-space, so nudge back by half of it to land optically centered. */
+  .label.zone { font-size: 12px; font-weight: 500; transform: translateX(0.84px); }
+  .label.date { font-size: 10.5px; fill-opacity: 0.5; transform: translateX(0.735px); }
+</style>
+</head>
+<body>
+  <button type="button" class="wrap" id="face" disabled>
+    <svg viewBox="0 0 200 200" role="img" aria-label="Clock" id="clock">
+      <defs>
+        <!-- The hands fade out where they cross the label instead of being cut
+             by it: a knockout leaves a severed tip floating past the text, and
+             a halo would need an opaque backdrop the widget doesn't have. -->
+        <radialGradient id="labelFade">
+          <stop offset="0" stop-color="#595959"></stop>
+          <stop offset="0.62" stop-color="#595959"></stop>
+          <stop offset="1" stop-color="#fff"></stop>
+        </radialGradient>
+        <mask id="labelMask" maskUnits="userSpaceOnUse" x="0" y="0" width="200" height="200">
+          <rect x="0" y="0" width="200" height="200" fill="#fff"></rect>
+          <ellipse id="labelFadeArea" cx="100" cy="142" rx="52" ry="22"
+                   fill="url(#labelFade)"></ellipse>
+        </mask>
+      </defs>
+      <circle class="face-ring" cx="100" cy="100" r="92"></circle>
+      <circle class="arc" id="arc" cx="100" cy="100" r="92"></circle>
+      <g id="ticks"></g>
+      <g id="hands">
+        <line class="hand hour"   id="hourHand"   x1="100" y1="100" x2="100" y2="54"></line>
+        <line class="hand minute" id="minuteHand" x1="100" y1="100" x2="100" y2="36"></line>
+        <line class="hand needle" id="needle"     x1="100" y1="112" x2="100" y2="20" style="display:none"></line>
+      </g>
+      <circle class="pin" cx="100" cy="100" r="4"></circle>
+      <circle class="pin-inner" cx="100" cy="100" r="1.6"></circle>
+      <text class="label zone" id="zoneLabel" x="100" y="133" text-anchor="middle"></text>
+      <text class="label date" id="dateLabel" x="100" y="150" text-anchor="middle"></text>
+    </svg>
+  </button>
+
+<script>
+(function () {
+  "use strict";
+
+  var params = new URLSearchParams(location.search);
+
+  function normalizeColor(value, fallback) {
+    if (!value) return fallback;
+    var v = value.trim();
+    if (/^[0-9a-f]{3}$|^[0-9a-f]{6}$/i.test(v)) return "#" + v;
+    if (/^#[0-9a-f]{3}$|^#[0-9a-f]{6}$/i.test(v)) return v;
+    if (/^(rgb|hsl)a?\([\d\s.,%\/-]+\)$/i.test(v)) return v;
+    if (/^[a-z]+$/i.test(v)) return v;
+    return fallback;
+  }
+
+  function flag(name, fallback) {
+    var v = params.get(name);
+    if (v === null) return fallback;
+    return v !== "false" && v !== "0" && v !== "off" && v !== "no";
+  }
+
+  var accent    = normalizeColor(params.get("color"), "#448361");
+  var inkParam  = params.get("ink");
+  var tickParam = params.get("tick");
+  var tz        = params.get("tz") || undefined;
+  var seconds   = (params.get("seconds") || "arc").toLowerCase();
+  var showDate  = flag("date", false);
+
+  var reduceMotion = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var smooth = flag("smooth", true) && !reduceMotion;
+
+  var root = document.documentElement.style;
+  root.setProperty("--accent", accent);
+
+  var bg = params.get("bg");
+  if (bg) root.setProperty("--bg", normalizeColor(bg, "transparent"));
+
+  // Notion's own theme is unreadable from a cross-origin iframe, but the OS
+  // preference does reach us. Follow it unless ?dark says otherwise.
+  var darkQuery = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+  var darkParam = params.get("dark");
+
+  function applyTheme() {
+    var dark = darkParam === null
+      ? !!(darkQuery && darkQuery.matches)
+      : flag("dark", false);
+    root.setProperty("--ink", normalizeColor(inkParam, dark ? "#E9E9E7" : "#2F3437"));
+    root.setProperty("--tick", normalizeColor(tickParam, dark ? "#B9B9B7" : "#9B9A97"));
+    // A transparent document still composites onto the frame's base canvas,
+    // which the UA paints white unless the document declares its scheme.
+    root.setProperty("color-scheme", dark ? "dark" : "light");
+  }
+
+  applyTheme();
+
+  if (darkParam === null && darkQuery) {
+    if (darkQuery.addEventListener) darkQuery.addEventListener("change", applyTheme);
+    else if (darkQuery.addListener) darkQuery.addListener(applyTheme);
+  }
+
+  // --- Zones ----------------------------------------------------------------
+  function isValidZone(id) {
+    if (!id) return false;
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: id }).format(new Date());
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  // "America/New_York" -> "New York". Uppercasing is left to .caption.
+  function labelFor(id) {
+    return id.split("/").pop().replace(/_/g, " ");
+  }
+
+  // ?zones=America/New_York,Asia/Seoul|HQ  — invalid or duplicate ids are
+  // dropped rather than allowed to throw later.
+  function parseZones(raw) {
+    var out = [];
+    var seen = {};
+    if (!raw) return out;
+    var items = raw.split(",");
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i].trim();
+      if (!item) continue;
+      var bar = item.indexOf("|");
+      var id = (bar === -1 ? item : item.slice(0, bar)).trim();
+      var label = bar === -1 ? "" : item.slice(bar + 1).trim();
+      if (!id || seen[id] || !isValidZone(id)) continue;
+      seen[id] = true;
+      out.push({ id: id, label: label || labelFor(id) });
+    }
+    return out;
+  }
+
+  function indexOfZone(list, id) {
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) return i;
+    return -1;
+  }
+
+  // Validate the timezone once; fall back to local if it is not recognized.
+  if (tz && !isValidZone(tz)) tz = undefined;
+
+  var zones = parseZones(params.get("zones"));
+  // An explicit tz joins the front of the list and becomes the default pick.
+  if (tz && zones.length && indexOfZone(zones, tz) === -1) {
+    zones.unshift({ id: tz, label: labelFor(tz) });
+  }
+  // One zone is nothing to cycle through, so it stays a plain fixed clock —
+  // but it still says which zone to show.
+  var cycling = zones.length >= 2;
+  if (!cycling && zones.length === 1 && !tz) tz = zones[0].id;
+
+  // Storage is partitioned or blocked outright in third-party iframes, so both
+  // accessors swallow everything and the widget degrades to zones[0].
+  var storeKey = cycling
+    ? "notion-clock:zone:" + zones.map(function (z) { return z.id; }).join(",")
+    : "";
+
+  function readStored() {
+    try {
+      return window.localStorage.getItem(storeKey);
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function writeStored(value) {
+    try {
+      window.localStorage.setItem(storeKey, value);
+    } catch (err) {
+      /* ignore — the selection just won't survive a reload */
+    }
+  }
+
+  // --- Face ticks -----------------------------------------------------------
+  var ticks = document.getElementById("ticks");
+  var svgNS = "http://www.w3.org/2000/svg";
+  for (var i = 0; i < 12; i++) {
+    var major = i % 3 === 0;
+    var angle = (i / 12) * Math.PI * 2;
+    var outer = 84;
+    var inner = major ? 73 : 78;
+    var line = document.createElementNS(svgNS, "line");
+    line.setAttribute("x1", (100 + Math.sin(angle) * inner).toFixed(2));
+    line.setAttribute("y1", (100 - Math.cos(angle) * inner).toFixed(2));
+    line.setAttribute("x2", (100 + Math.sin(angle) * outer).toFixed(2));
+    line.setAttribute("y2", (100 - Math.cos(angle) * outer).toFixed(2));
+    line.setAttribute("class", "tick " + (major ? "major" : "minor"));
+    ticks.appendChild(line);
+  }
+
+  // --- Elements -------------------------------------------------------------
+  var arcEl     = document.getElementById("arc");
+  var hourEl    = document.getElementById("hourHand");
+  var minuteEl  = document.getElementById("minuteHand");
+  var needleEl  = document.getElementById("needle");
+  var zoneEl    = document.getElementById("zoneLabel");
+  var dateEl    = document.getElementById("dateLabel");
+  var fadeEl    = document.getElementById("labelFadeArea");
+  var handsEl   = document.getElementById("hands");
+  var clockEl   = document.getElementById("clock");
+  var faceEl    = document.getElementById("face");
+
+  var CIRC = 2 * Math.PI * 92;
+  arcEl.style.strokeDasharray = CIRC.toFixed(2);
+
+  if (seconds === "needle") {
+    needleEl.style.display = "";
+    arcEl.style.display = "none";
+  } else if (seconds === "off") {
+    arcEl.style.display = "none";
+  }
+
+  // A single label sits a little lower than the top line of a pair, so either
+  // arrangement reads as centered in the lower half of the dial.
+  // The window has to reach past the minute hand's tip (y = 164 at 6:30) or
+  // the tip pokes out the far side of the fade as a floating dark stub.
+  var fadeCenter = 134;
+  var fadeHeight = 46;
+
+  if (cycling && showDate) {
+    zoneEl.setAttribute("y", 125);
+    dateEl.setAttribute("y", 142);
+  } else if (cycling || showDate) {
+    (cycling ? zoneEl : dateEl).setAttribute("y", 133);
+    fadeCenter = 129;
+    fadeHeight = 44;
+  }
+
+  // Widen the fade to whatever the labels actually measure, so a long city
+  // name doesn't poke out of the window and a short one doesn't over-dim.
+  function sizeFade() {
+    var widest = 0;
+    [zoneEl, dateEl].forEach(function (el) {
+      if (!el.textContent) return;
+      try {
+        widest = Math.max(widest, el.getBBox().width);
+      } catch (err) {
+        /* getBBox throws on a display:none tree in some engines */
+      }
+    });
+    if (!widest) return;
+    fadeEl.setAttribute("cx", 100);
+    fadeEl.setAttribute("cy", fadeCenter);
+    fadeEl.setAttribute("rx", (widest / 2 + 16).toFixed(2));
+    fadeEl.setAttribute("ry", fadeHeight);
+  }
+
+  // Masking animated hands is not free, so only pay for it when a label is
+  // actually there to be read.
+  if (cycling || showDate) handsEl.setAttribute("mask", "url(#labelMask)");
+
+  // --- Time -----------------------------------------------------------------
+  var timeFormatter;
+  var dateFormatter;
+
+  function buildFormatters(zone) {
+    timeFormatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: zone,
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    });
+
+    dateFormatter = new Intl.DateTimeFormat(undefined, {
+      timeZone: zone,
+      weekday: "short",
+      month: "short",
+      day: "numeric"
+    });
+  }
+
+  buildFormatters(cycling ? undefined : tz);
+
+  function readClock() {
+    var now = new Date();
+    var parts = timeFormatter.formatToParts(now);
+    var out = { hour: 0, minute: 0, second: 0 };
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i];
+      if (p.type === "hour")   out.hour   = parseInt(p.value, 10) % 24;
+      if (p.type === "minute") out.minute = parseInt(p.value, 10);
+      if (p.type === "second") out.second = parseInt(p.value, 10);
+    }
+    out.ms = now.getMilliseconds();
+    out.date = now;
+    return out;
+  }
+
+  var lastCaption = "";
+  var lastAria = "";
+
+  // Keep rotations continuous across the 360 -> 0 wrap so a transitioned hand
+  // never sweeps the long way round on a rollover or a zone switch.
+  var prevHourAngle = null;
+  var prevMinuteAngle = null;
+
+  function nearestAngle(prev, next) {
+    if (prev === null) return next;
+    var delta = (((next - prev + 180) % 360) + 360) % 360 - 180;
+    return prev + delta;
+  }
+
+  function render() {
+    var t = readClock();
+    var fractionalSecond = smooth ? t.second + t.ms / 1000 : t.second;
+    var minutes = t.minute + fractionalSecond / 60;
+    var hours = (t.hour % 12) + minutes / 60;
+
+    prevHourAngle = nearestAngle(prevHourAngle, hours * 30);
+    prevMinuteAngle = nearestAngle(prevMinuteAngle, minutes * 6);
+    hourEl.style.transform   = "rotate(" + prevHourAngle.toFixed(3) + "deg)";
+    minuteEl.style.transform = "rotate(" + prevMinuteAngle.toFixed(3) + "deg)";
+
+    if (seconds === "needle") {
+      needleEl.style.transform = "rotate(" + (fractionalSecond * 6).toFixed(3) + "deg)";
+    } else if (seconds === "arc") {
+      var progress = fractionalSecond / 60;
+      arcEl.style.strokeDashoffset = (CIRC * (1 - progress)).toFixed(2);
+    }
+
+    if (showDate) {
+      var label = dateFormatter.format(t.date);
+      if (label !== lastCaption) {
+        // Uppercased here rather than in CSS: text-transform on SVG text is
+        // not dependable outside Blink.
+        dateEl.textContent = label.toUpperCase();
+        lastCaption = label;
+        sizeFade();
+      }
+    }
+
+    var hh = String(t.hour).padStart(2, "0");
+    var mm = String(t.minute).padStart(2, "0");
+    var aria = "Clock showing " + hh + ":" + mm;
+    if (cycling) {
+      aria += " in " + zones[zoneIndex].label + ". Activate to switch timezone.";
+    }
+    if (aria !== lastAria) {
+      (cycling ? faceEl : clockEl).setAttribute("aria-label", aria);
+      lastAria = aria;
+    }
+  }
+
+  // --- Loop -----------------------------------------------------------------
+  var rafId = null;
+  var intervalId = null;
+
+  function startSmooth() {
+    function frame() {
+      render();
+      rafId = requestAnimationFrame(frame);
+    }
+    frame();
+  }
+
+  function startTicking() {
+    render();
+    intervalId = setInterval(render, 1000);
+  }
+
+  function start() {
+    stop();
+    if (smooth) startSmooth();
+    else startTicking();
+  }
+
+  function stop() {
+    if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
+    if (intervalId !== null) { clearInterval(intervalId); intervalId = null; }
+  }
+
+  // --- Zone cycling ---------------------------------------------------------
+  var zoneIndex = 0;
+  var shiftTimer = null;
+
+  function shiftHands() {
+    if (reduceMotion) return;
+    if (shiftTimer !== null) clearTimeout(shiftTimer);
+    hourEl.classList.add("shifting");
+    minuteEl.classList.add("shifting");
+    shiftTimer = setTimeout(function () {
+      hourEl.classList.remove("shifting");
+      minuteEl.classList.remove("shifting");
+      shiftTimer = null;
+    }, 280);
+  }
+
+  function setZone(index, animate) {
+    zoneIndex = (index % zones.length + zones.length) % zones.length;
+    buildFormatters(zones[zoneIndex].id);
+    zoneEl.textContent = zones[zoneIndex].label.toUpperCase();
+    sizeFade();
+    writeStored(zones[zoneIndex].id);
+    lastCaption = "";
+    if (animate) shiftHands();
+    render();
+  }
+
+  if (cycling) {
+    clockEl.setAttribute("aria-hidden", "true");
+    clockEl.removeAttribute("role");
+    clockEl.removeAttribute("aria-label");
+    faceEl.disabled = false;
+
+    var stored = readStored();
+    var startIndex = stored !== null ? indexOfZone(zones, stored) : -1;
+    if (startIndex === -1) startIndex = tz ? Math.max(indexOfZone(zones, tz), 0) : 0;
+    setZone(startIndex, false);
+
+    faceEl.addEventListener("click", function () {
+      setZone(zoneIndex + 1, true);
+    });
+
+    // Enter and Space come free with <button>; arrows step both directions.
+    faceEl.addEventListener("keydown", function (event) {
+      var step = 0;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") step = 1;
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") step = -1;
+      if (!step) return;
+      event.preventDefault();
+      setZone(zoneIndex + step, true);
+    });
+  }
+
+  // Don't burn cycles while the Notion tab is in the background.
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) stop();
+    else start();
+  });
+
+  start();
+})();
+</script>
+</body>
+</html>

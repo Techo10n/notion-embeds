@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Calendar</title>
+<style>
+  :root {
+    --accent: #448361;
+    --ink: #2F3437;
+    --tick: #9B9A97;
+    /* Set from JS: the width of one day column. Every size below is a
+       multiple of it, so the whole month scales with the embed block. */
+    --u: 32px;
+  }
+
+  * { box-sizing: border-box; }
+
+  /* Transparent by default so the host page shows through. ?bg= paints a
+     backdrop only for hosts whose own background can't be relied on. */
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--bg, transparent);
+    overflow: hidden;
+  }
+
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ?fill paints a card; without it the widget is bare on the host page, the
+     same way the clock face is. --on-fill is the readable text color for
+     whatever the card is painted with. */
+  .card {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: calc(var(--u) * 0.34);
+    border-radius: calc(var(--u) * 0.3);
+    background: var(--fill, transparent);
+    color: var(--fill-ink, var(--ink));
+  }
+
+  /* A painted card spans the whole block — a Notion block is the frame, and a
+     card floating inside it with the page showing down both sides reads as a
+     mistake. Unpainted, there is nothing to span, so the grid just centers. */
+  .card.filled { width: 100%; height: 100%; }
+
+  table {
+    border-collapse: collapse;
+    table-layout: fixed;
+    width: calc(var(--u) * 7);
+  }
+
+  /* The month name is the table's caption, so it is announced as the grid's
+     label rather than being a loose line of text above it. */
+  caption {
+    caption-side: top;
+    height: calc(var(--u) * 1.2);
+    font-size: calc(var(--u) * 0.42);
+    font-weight: 600;
+    line-height: calc(var(--u) * 1.05);
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+  }
+
+  th {
+    height: calc(var(--u) * 0.9);
+    font-size: calc(var(--u) * 0.3);
+    font-weight: 500;
+    color: var(--muted, var(--tick));
+    vertical-align: middle;
+  }
+
+  /* font-size: 0 kills the cell's inline strut. Left alive it is the inherited
+     16px — taller than the row itself once the widget is small — so the grid
+     would stop scaling down and overflow the block instead. */
+  td {
+    width: var(--u);
+    height: calc(var(--u) * 0.86);
+    padding: 0;
+    font-size: 0;
+    line-height: 0;
+    text-align: center;
+    vertical-align: middle;
+  }
+
+  /* A fixed-size chip rather than a padded cell, so the highlight is square at
+     every scale and the numbers keep their column rhythm. */
+  .day {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: calc(var(--u) * 0.74);
+    height: calc(var(--u) * 0.74);
+    border-radius: calc(var(--u) * 0.19);
+    font-size: calc(var(--u) * 0.34);
+    line-height: 1;
+  }
+
+  .day.today {
+    background: var(--today-bg, var(--accent));
+    color: var(--today-ink, #fff);
+    font-weight: 600;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <table id="cal">
+      <caption id="title"></caption>
+      <thead><tr id="head"></tr></thead>
+      <tbody id="grid"></tbody>
+    </table>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  var params = new URLSearchParams(location.search);
+
+  // A bare hex without the "#" is the common way to write a color in a query
+  // string, since "#" starts the fragment. Everything else is handed to the
+  // engine to judge — a color that only *looks* valid (a misspelled name) would
+  // otherwise reach CSS as garbage and drop the property it was meant to paint.
+  function normalizeColor(value, fallback) {
+    if (!value) return fallback;
+    var v = value.trim();
+    if (/^[0-9a-f]{3,8}$/i.test(v) && v.length !== 5 && v.length !== 7) v = "#" + v;
+    if (window.CSS && CSS.supports && !CSS.supports("color", v)) return fallback;
+    return v;
+  }
+
+  function flag(name, fallback) {
+    var v = params.get(name);
+    if (v === null) return fallback;
+    return v !== "false" && v !== "0" && v !== "off" && v !== "no";
+  }
+
+  var accent    = normalizeColor(params.get("color"), "#448361");
+  var inkParam  = params.get("ink");
+  var tickParam = params.get("tick");
+  var locale    = params.get("locale") || undefined;
+  var tz        = params.get("tz") || undefined;
+  var showToday = flag("today", true);
+
+  // ?fill takes a color, or a bare true to mean "the accent" — the filled-card
+  // look. Absent, the calendar is transparent like the clock.
+  var fillParam = params.get("fill");
+  var fill = null;
+  if (fillParam !== null) {
+    if (/^(true|1|on|yes|)$/i.test(fillParam.trim())) fill = accent;
+    else if (!/^(false|0|off|no)$/i.test(fillParam.trim())) fill = normalizeColor(fillParam, accent);
+  }
+
+  var root = document.documentElement.style;
+  root.setProperty("--accent", accent);
+
+  var bg = params.get("bg");
+  if (bg) root.setProperty("--bg", normalizeColor(bg, "transparent"));
+
+  // --- Contrast -------------------------------------------------------------
+  // Any CSS color is legal in these params, including names and hsl(), so
+  // resolve through the engine rather than parsing hex by hand.
+  var probe = document.createElement("span");
+  probe.style.display = "none";
+  document.body.appendChild(probe);
+
+  function luminance(color) {
+    probe.style.color = "";
+    probe.style.color = color;
+    var m = /(-?[\d.]+)[\s,]+(-?[\d.]+)[\s,]+(-?[\d.]+)/.exec(
+      window.getComputedStyle(probe).color
+    );
+    if (!m) return 0;
+    var c = [+m[1], +m[2], +m[3]].map(function (v) {
+      v = Math.min(Math.max(v, 0), 255) / 255;
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  }
+
+  // WCAG contrast against white is 1.06:1 at L=0.6 and 4.5:1 at L=0.18; 0.45
+  // is the crossover where black overtakes white as the readable choice.
+  function onColor(color) {
+    return luminance(color) > 0.45 ? "#2F3437" : "#FFFFFF";
+  }
+
+  // --- Theme ----------------------------------------------------------------
+  // Notion's own theme is unreadable from a cross-origin iframe, but the OS
+  // preference does reach us. Follow it unless ?dark says otherwise.
+  var darkQuery = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+  var darkParam = params.get("dark");
+
+  function applyTheme() {
+    var dark = darkParam === null
+      ? !!(darkQuery && darkQuery.matches)
+      : flag("dark", false);
+    root.setProperty("--ink", normalizeColor(inkParam, dark ? "#E9E9E7" : "#2F3437"));
+    root.setProperty("--tick", normalizeColor(tickParam, dark ? "#B9B9B7" : "#9B9A97"));
+    // A transparent document still composites onto the frame's base canvas,
+    // which the UA paints white unless the document declares its scheme.
+    root.setProperty("color-scheme", dark ? "dark" : "light");
+
+    if (fill) {
+      document.querySelector(".card").classList.add("filled");
+      // On a card, every color is fixed by the card itself — the OS theme
+      // must not repaint text onto a background it no longer contrasts with.
+      var on = onColor(fill);
+      root.setProperty("--fill", fill);
+      root.setProperty("--fill-ink", on);
+      root.setProperty("--muted", on === "#FFFFFF" ? "rgba(255,255,255,0.78)" : "rgba(47,52,55,0.62)");
+      root.setProperty("--today-bg", on);
+      root.setProperty("--today-ink", fill);
+    } else {
+      root.setProperty("--today-bg", accent);
+      root.setProperty("--today-ink", onColor(accent));
+    }
+  }
+
+  applyTheme();
+
+  if (darkParam === null && darkQuery) {
+    if (darkQuery.addEventListener) darkQuery.addEventListener("change", applyTheme);
+    else if (darkQuery.addListener) darkQuery.addListener(applyTheme);
+  }
+
+  // --- Dates ----------------------------------------------------------------
+  function isValidZone(id) {
+    if (!id) return false;
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: id }).format(new Date());
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  if (tz && !isValidZone(tz)) tz = undefined;
+
+  // "Today" is a wall-clock date, not an instant, so it has to be read in the
+  // target zone — en-CA to get an unambiguous YYYY-MM-DD out of the formatter.
+  var dayFormatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  });
+
+  function today() {
+    var p = dayFormatter.format(new Date()).split("-");
+    return { y: +p[0], m: +p[1], d: +p[2] };
+  }
+
+  // ?month=YYYY-MM pins the view; anything else tracks the current month.
+  var pinned = null;
+  var monthParam = params.get("month");
+  if (monthParam) {
+    var m = /^(\d{4})-(\d{1,2})$/.exec(monthParam.trim());
+    if (m && +m[2] >= 1 && +m[2] <= 12) pinned = { y: +m[1], m: +m[2] };
+  }
+
+  // Sunday-first is the other common convention; Monday-first is the default.
+  var weekStart = /^(sun|sunday|0)$/i.test(params.get("start") || "") ? 0 : 1;
+
+  var monthFormatter = new Intl.DateTimeFormat(locale, {
+    timeZone: "UTC",
+    month: "long",
+    year: "numeric"
+  });
+  var weekdayFormatter = new Intl.DateTimeFormat(locale, {
+    timeZone: "UTC",
+    weekday: "narrow"
+  });
+
+  // --- Render ---------------------------------------------------------------
+  var titleEl = document.getElementById("title");
+  var headEl  = document.getElementById("head");
+  var gridEl  = document.getElementById("grid");
+  var tableEl = document.getElementById("cal");
+
+  // 2024-01-07 is a Sunday, so +i lands on weekday i with no lookup table.
+  for (var i = 0; i < 7; i++) {
+    var th = document.createElement("th");
+    th.scope = "col";
+    var date = new Date(Date.UTC(2024, 0, 7 + ((weekStart + i) % 7)));
+    th.textContent = weekdayFormatter.format(date).toUpperCase();
+    // The narrow form collides (M T W T F S S), so spell the day out for
+    // screen readers instead of leaving them a single letter.
+    th.setAttribute("aria-label", new Intl.DateTimeFormat(locale, {
+      timeZone: "UTC", weekday: "long"
+    }).format(date));
+    headEl.appendChild(th);
+  }
+
+  var rows = 6;
+  var shownKey = "";
+
+  function draw() {
+    var now = today();
+    var view = pinned || { y: now.y, m: now.m };
+    var key = view.y + "-" + view.m + "-" + now.y + "-" + now.m + "-" + now.d;
+    if (key === shownKey) return;
+    shownKey = key;
+
+    // Day 0 of the next month is the last day of this one. All arithmetic is
+    // in UTC so a DST transition can't shift a date by an hour into the day
+    // before it.
+    var first = new Date(Date.UTC(view.y, view.m - 1, 1));
+    var count = new Date(Date.UTC(view.y, view.m, 0)).getUTCDate();
+    var offset = (first.getUTCDay() - weekStart + 7) % 7;
+
+    titleEl.textContent = monthFormatter.format(first);
+
+    var isCurrentMonth = now.y === view.y && now.m === view.m;
+    rows = Math.ceil((offset + count) / 7);
+
+    gridEl.textContent = "";
+    for (var r = 0; r < rows; r++) {
+      var tr = document.createElement("tr");
+      for (var c = 0; c < 7; c++) {
+        var td = document.createElement("td");
+        var day = r * 7 + c - offset + 1;
+        if (day >= 1 && day <= count) {
+          var span = document.createElement("span");
+          span.className = "day";
+          span.textContent = day;
+          if (showToday && isCurrentMonth && day === now.d) {
+            span.classList.add("today");
+            span.setAttribute("aria-current", "date");
+          }
+          td.appendChild(span);
+        }
+        tr.appendChild(td);
+      }
+      gridEl.appendChild(tr);
+    }
+
+    tableEl.setAttribute("aria-label", titleEl.textContent);
+    resize();
+  }
+
+  // --- Sizing ---------------------------------------------------------------
+  // The block is often a 160–200px sidebar column, so the month is sized to
+  // whichever axis runs out first rather than assuming a comfortable width.
+  function resize() {
+    var w = document.documentElement.clientWidth;
+    var h = document.documentElement.clientHeight;
+    // 0.68u of card padding, then caption + weekday row + the day rows.
+    var u = Math.min(
+      (w - 2) / (7 + 0.68),
+      (h - 2) / (1.2 + 0.9 + 0.86 * rows + 0.68)
+    );
+    root.setProperty("--u", Math.max(u, 8).toFixed(3) + "px");
+  }
+
+  if (window.ResizeObserver) {
+    new ResizeObserver(resize).observe(document.documentElement);
+  } else {
+    window.addEventListener("resize", resize);
+  }
+
+  // --- Midnight -------------------------------------------------------------
+  // Nothing animates, so there is no render loop — just a one-minute poll whose
+  // draw() is a no-op until the date actually changes. Polling rather than
+  // timing the exact midnight keeps it correct across a suspended tab, a clock
+  // adjustment, or a DST shift, none of which a single long timer survives.
+  var pollId = null;
+
+  function start() {
+    draw();
+    if (pollId === null) pollId = setInterval(draw, 60000);
+  }
+
+  function stop() {
+    if (pollId !== null) { clearInterval(pollId); pollId = null; }
+  }
+
+  // Don't burn cycles while the Notion tab is in the background.
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) stop();
+    else start();
+  });
+
+  start();
+})();
+</script>
+</body>
+</html>
