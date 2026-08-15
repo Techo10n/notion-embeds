@@ -13,11 +13,13 @@
 
   * { box-sizing: border-box; }
 
+  /* Transparent by default so the host page shows through. ?bg= paints a
+     backdrop only for hosts whose own background can't be relied on. */
   html, body {
     margin: 0;
     padding: 0;
     height: 100%;
-    background: transparent;
+    background: var(--bg, transparent);
     overflow: hidden;
   }
 
@@ -187,6 +189,9 @@
 
   var root = document.documentElement.style;
   root.setProperty("--accent", accent);
+
+  var bg = params.get("bg");
+  if (bg) root.setProperty("--bg", normalizeColor(bg, "transparent"));
 
   // Notion's own theme is unreadable from a cross-origin iframe, but the OS
   // preference does reach us. Follow it unless ?dark says otherwise.
