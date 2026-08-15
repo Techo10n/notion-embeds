@@ -204,6 +204,9 @@
       : flag("dark", false);
     root.setProperty("--ink", normalizeColor(inkParam, dark ? "#E9E9E7" : "#2F3437"));
     root.setProperty("--tick", normalizeColor(tickParam, dark ? "#B9B9B7" : "#9B9A97"));
+    // A transparent document still composites onto the frame's base canvas,
+    // which the UA paints white unless the document declares its scheme.
+    root.setProperty("color-scheme", dark ? "dark" : "light");
   }
 
   applyTheme();
