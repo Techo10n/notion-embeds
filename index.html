@@ -335,16 +335,16 @@
   // arrangement reads as centered in the lower half of the dial.
   // The window has to reach past the minute hand's tip (y = 164 at 6:30) or
   // the tip pokes out the far side of the fade as a floating dark stub.
-  var fadeCenter = 142;
-  var fadeHeight = 42;
+  var fadeCenter = 134;
+  var fadeHeight = 46;
 
   if (cycling && showDate) {
-    zoneEl.setAttribute("y", 133);
-    dateEl.setAttribute("y", 150);
+    zoneEl.setAttribute("y", 125);
+    dateEl.setAttribute("y", 142);
   } else if (cycling || showDate) {
-    (cycling ? zoneEl : dateEl).setAttribute("y", 141);
-    fadeCenter = 137;
-    fadeHeight = 40;
+    (cycling ? zoneEl : dateEl).setAttribute("y", 133);
+    fadeCenter = 129;
+    fadeHeight = 44;
   }
 
   // Widen the fade to whatever the labels actually measure, so a long city
