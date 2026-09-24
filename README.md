@@ -26,4 +26,8 @@ Both widgets are configured with URL query parameters:
 
 ## Using one
 
-Host the repo on any static host (GitHub Pages, Vercel, etc.), then paste the widget's URL into a Notion `/embed` block.
+The widgets are live on GitHub Pages at [techo10n.github.io/notion-embeds](https://techo10n.github.io/notion-embeds/). Paste a widget's URL, with any options, into a Notion `/embed` block, for example:
+
+```
+https://techo10n.github.io/notion-embeds/clock.html?zones=America/Los_Angeles,Asia/Seoul&date=true
+```
